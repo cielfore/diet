@@ -123,6 +123,7 @@ const BF_ITEMS = [['egg','달걀 2개'],['natto','낫또 1개'],['grain','잡곡
 const BF_WEEKDAY = ['egg','natto','grain','apple'], BF_WEEKEND = ['egg','salad'];
 const MAIN_ITEMS = [['mixed','잡곡밥'],['white','백미밥'],['meat','고기반찬'],['cutlet','돈가스'],['bibim','비빔밥'],['veg','채소 반찬 3종'],['soup','국·탕 건더기만']];
 const MAIN_DEFAULT = ['mixed','meat','veg','soup'];
+const WEEKEND_MENU = [['w_bread','빵'],['w_sundae','순대'],['w_tteokbokki','떡볶이'],['w_ramen','라면'],['w_buffet','뷔페'],['w_gimbap','김밥'],['w_cutlet','돈가스'],['w_noodle','국수'],['w_sushi','스시'],['w_hoedeop','회덮밥']];
 const OUTS = [['sashimi','회'],['meat','고기'],['stew','탕']];
 const DRINKS = [['soju','소주','병',0.5],['beer','맥주','잔',1],['wine','와인','잔',1],['mak','막걸리','병',0.5]];
 const PAIN = ['없음','약간','심함'];
@@ -141,7 +142,8 @@ function ic(n, s){ return '<svg aria-hidden="true" width="'+(s||22)+'" height="'
 function load(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch(e){ return d; } }
 function store(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch(e){ toast('저장하지 못했어요. 저장 공간을 확인해 주세요.'); return false; } }
 function defaultSettings(){ return { target:65, maintLow:64, maintHigh:66, startWeight:null, startDate:null, lastBackup:null,
-  exercises:[{id:'yoga',name:'요가'},{id:'squat',name:'스쿼트 100개'},{id:'walk',name:'걷기 30분+'},{id:'run',name:'달리기 30분+'}] }; }
+  exercises:[{id:'yoga',name:'요가'},{id:'squat',name:'스쿼트 100개'},{id:'walk',name:'걷기 30분+'},{id:'run',name:'달리기 30분+'}],
+  menus:{ weekday: MAIN_ITEMS.map(m => ({ id:m[0], name:m[1] })), weekend: WEEKEND_MENU.map(m => ({ id:m[0], name:m[1] })) } }; }
 let entries = load(LS_E, {});
 let settings = Object.assign(defaultSettings(), load(LS_S, {}));
 function saveAll(){ return store(LS_E, entries) && store(LS_S, settings); }
@@ -190,18 +192,28 @@ function streak(){
 }
 
 /* ---------- 기본값 ---------- */
-function mainDefault(){ return { mode:'corp', items:MAIN_DEFAULT.slice(), out:'sashimi', amt:'small' }; }
+function menuList(date){ return isWeekend(date) ? settings.menus.weekend : settings.menus.weekday; }
+function menuName(id){
+  const all = settings.menus.weekday.concat(settings.menus.weekend);
+  const m = all.find(x => x.id === id) || MAIN_ITEMS.concat(WEEKEND_MENU).map(x => ({ id:x[0], name:x[1] })).find(x => x.id === id);
+  return m ? m.name : id;
+}
+function mainDefault(date){
+  const items = isWeekend(date) ? [] : MAIN_DEFAULT.filter(id => settings.menus.weekday.some(m => m.id === id));
+  return { mode:'corp', items, out:'sashimi', amt:'small' };
+}
 function defaultEntry(date){
   const prev = entries[addDays(date, -1)];
   const prevOver = mealStatus(prev) === 'over';
   const lw = lastWeightBefore(date);
   return { date, weight: lw != null ? lw : (settings.startWeight != null ? settings.startWeight : 70), noWeight:false,
-    meals:{ bf:{ items: prevOver ? [] : (isWeekend(date) ? BF_WEEKEND : BF_WEEKDAY).slice() }, lunch:mainDefault(), dinner:mainDefault() },
+    meals:{ bf:{ items: prevOver ? [] : (isWeekend(date) ? BF_WEEKEND : BF_WEEKDAY).slice() }, lunch:mainDefault(date), dinner:mainDefault(date) },
     overPct:10, drinks:{ soju:0, beer:0, wine:0, mak:0 }, ex:[], pain:0, memo:'' };
 }
 const clone = o => JSON.parse(JSON.stringify(o));
 
 /* ---------- 상태 ---------- */
+let addingMenu = null;
 let tab = 'home', draft = null, touched = false, editingWeight = false, openMeal = { bf:false, lunch:false, dinner:false }, range = 30;
 const app = document.getElementById('app');
 
@@ -213,7 +225,9 @@ function openCheckin(date){
   if (!draft.meals) draft.meals = base.meals;
   if (!draft.drinks) draft.drinks = base.drinks;
   touched = typeof (entries[date] || {}).weight === 'number' || !!draft.noWeight;
-  editingWeight = false; openMeal = { bf:false, lunch:false, dinner:false };
+  editingWeight = false; addingMenu = null;
+  const wkend = isWeekend(date) && !entries[date];
+  openMeal = { bf:false, lunch:wkend, dinner:wkend };
   tab = 'checkin'; render(); window.scrollTo(0, 0);
 }
 
@@ -275,7 +289,8 @@ function mealSummary(key){
   if (m.mode === 'skip') return '거름';
   const amt = m.amt === 'over' ? '초과' : '소량';
   if (m.mode === 'out') return '외식 · '+(OUTS.find(o => o[0] === m.out) || ['', ''])[1]+' · '+amt;
-  return '식사 · '+m.items.map(i => (MAIN_ITEMS.find(b => b[0] === i) || [i, i])[1]).join(', ')+' · '+amt;
+  if (!m.items.length) return '선택 안 함 · 이대로 저장하면 거름';
+  return m.items.map(menuName).join(', ')+' · '+amt;
 }
 function mealBlock(key, name){
   const m = draft.meals[key], open = openMeal[key];
@@ -288,7 +303,14 @@ function mealBlock(key, name){
       h += '<div class="row"><span class="small muted">아무것도 선택 안 하면 거른 걸로 저장돼요</span><button class="chip ink '+(m.items.length?'':'on')+'" data-act="bfSkip">거름</button></div>';
     } else {
       h += '<div class="seg g3" style="display:grid">'+[['corp','식사'],['out','외식'],['skip','거름']].map(o => '<button class="'+(m.mode===o[0]?'on':'')+'" aria-pressed="'+(m.mode===o[0])+'" data-act="mode" data-k="'+key+'" data-v="'+o[0]+'">'+o[1]+'</button>').join('')+'</div>';
-      if (m.mode === 'corp') h += '<div class="chips">'+MAIN_ITEMS.map(b => '<button class="chip '+(m.items.includes(b[0])?'on':'')+'" aria-pressed="'+m.items.includes(b[0])+'" data-act="mainItem" data-k="'+key+'" data-v="'+b[0]+'">'+b[1]+'</button>').join('')+'</div>';
+      if (m.mode === 'corp'){
+        const list = menuList(draft.date).map(x => [x.id, x.name]);
+        m.items.forEach(id => { if (!list.some(x => x[0] === id)) list.push([id, menuName(id)]); });
+        if (isWeekend(draft.date)) h += '<div class="small muted">주말은 기본값이 없어요. 먹은 메뉴를 골라 주세요.</div>';
+        h += '<div class="chips">'+list.map(b => '<button class="chip '+(m.items.includes(b[0])?'on':'')+'" aria-pressed="'+m.items.includes(b[0])+'" data-act="mainItem" data-k="'+key+'" data-v="'+esc(b[0])+'">'+esc(b[1])+'</button>').join('')
+          + (addingMenu === key ? '' : '<button class="chip dash" data-act="menuInline" data-k="'+key+'">+ 메뉴 추가</button>') + '</div>';
+        if (addingMenu === key) h += '<div style="display:flex;gap:8px"><label for="menuInlineInput" style="position:absolute;left:-9999px">새 메뉴 이름</label><input id="menuInlineInput" class="text" type="text" maxlength="20" placeholder="예: 짜장면"><button class="chip ink on" data-act="menuInlineAdd" data-k="'+key+'" style="flex:none">추가</button></div><div class="small muted">'+(isWeekend(draft.date) ? '주말' : '평일')+' 메뉴 목록에 저장되고 바로 선택돼요.</div>';
+      }
       if (m.mode === 'out') h += '<div class="grid g3">'+OUTS.map(o => '<button class="chip '+(m.out===o[0]?'on':'')+'" aria-pressed="'+(m.out===o[0])+'" data-act="out" data-k="'+key+'" data-v="'+o[0]+'" style="min-height:52px;border-radius:16px;font-size:15px">'+o[1]+'</button>').join('')+'</div>';
       if (m.mode !== 'skip') h += '<div class="row"><span class="small muted">양</span><div class="grid g2" style="width:180px"><button class="opt ink '+(m.amt==='small'?'on':'')+'" data-act="amt" data-k="'+key+'" data-v="small">소량</button><button class="opt '+(m.amt==='over'?'on':'')+'" data-act="amt" data-k="'+key+'" data-v="over">초과</button></div></div>';
     }
@@ -408,6 +430,8 @@ function renderSettings(){
   let h = '<div class="head"><div><div class="sub">기록 '+n+'일</div><h1>설정</h1></div></div>';
   h += '<div class="card"><div class="sect">목표</div><div class="list">'+numRow('1차 목표 체중 (kg)', 'target')+numRow('유지 범위 하한', 'maintLow')+numRow('유지 범위 상한', 'maintHigh')+numRow('시작 체중', 'startWeight')+'</div><div class="small muted">시작 체중을 비워 두면 첫 기록 값('+(st.w != null ? f1(st.w)+'kg' : '없음')+')을 써요.</div></div>';
   h += '<div class="card"><div class="sect">운동 목록</div><div class="list">'+settings.exercises.map(x => '<div><span>'+esc(x.name)+'</span><button class="del" aria-label="'+esc(x.name)+' 삭제" data-act="exDel" data-v="'+x.id+'">'+ic('x', 18)+'</button></div>').join('')+'</div><div style="display:flex;gap:8px;margin-top:8px"><label for="exNew" style="position:absolute;left:-9999px">새 운동 이름</label><input id="exNew" class="text" type="text" maxlength="20" placeholder="예: 수영 30분+"><button class="chip ink on" data-act="exAdd" style="flex:none">추가</button></div><div class="small muted" style="margin-top:8px">삭제해도 지난 기록은 남아요.</div></div>';
+  const menuCard = (k, title, note) => '<div class="sect" style="margin-top:6px">'+title+'</div><div class="small muted">'+note+'</div><div class="chips" style="margin-top:8px">'+settings.menus[k].map(x => '<span class="chip" style="display:inline-flex;align-items:center;gap:2px;padding:0 4px 0 14px">'+esc(x.name)+'<button class="del" style="width:36px;height:36px" aria-label="'+esc(x.name)+' 삭제" data-act="menuDel" data-k="'+k+'" data-v="'+esc(x.id)+'">'+ic('x', 16)+'</button></span>').join('')+'</div><div style="display:flex;gap:8px;margin-top:8px"><label for="menuNew_'+k+'" style="position:absolute;left:-9999px">'+title+' 새 메뉴</label><input id="menuNew_'+k+'" class="text" type="text" maxlength="20" placeholder="새 메뉴 이름"><button class="chip ink on" data-act="menuAdd" data-k="'+k+'" style="flex:none">추가</button></div>';
+  h += '<div class="card">'+menuCard('weekday', '평일 점심·저녁 메뉴', '잡곡밥, 고기반찬, 채소 반찬 3종, 국·탕 건더기만은 기본 선택돼요.')+'<div class="line" style="margin:16px 0 4px"></div>'+menuCard('weekend', '주말 점심·저녁 메뉴', '기본 선택 없이 비어 있어요. 먹은 것만 골라요.')+'<div class="small muted" style="margin-top:8px">삭제해도 지난 기록은 남아요.</div></div>';
   h += '<div class="card"><div class="sect">밤 알림</div><p style="margin:8px 0 0;font-size:14px">웹앱은 스스로 알림을 보낼 수 없어서 아이폰 <b>미리 알림</b> 앱으로 설정해요.</p><ol class="help"><li>미리 알림 앱에서 새 항목 “체중 기록” 추가</li><li>항목 옆 ⓘ → 날짜·시간 켜고 22:30</li><li>반복 → 매일</li><li>알림이 오면 홈 화면의 소식일기를 열어 기록</li></ol></div>';
   h += '<div class="card"><div class="sect">백업</div><p class="small muted" style="margin:6px 0 4px">기록은 이 아이폰 안에만 저장돼요. 앱을 지우거나 사파리 데이터를 지우면 사라지니 한 달에 한 번 백업 파일을 저장해 두세요.</p><div class="list"><div><span>마지막 백업</span><span class="muted">'+(settings.lastBackup ? fmtDate(settings.lastBackup) : '없음')+'</span></div></div><div class="grid g2" style="margin-top:8px"><button class="chip ink on" data-act="backup">백업 파일 저장</button><button class="chip" data-act="import">백업 불러오기</button></div><button class="chip" data-act="csv" style="width:100%;margin-top:8px">엑셀용 CSV 내보내기</button></div>';
   h += '<div style="text-align:center;margin-top:8px"><button class="small" data-act="reset" style="color:var(--warn-ink);min-height:44px">모든 기록 지우기</button></div>';
@@ -464,6 +488,17 @@ document.addEventListener('click', async ev => {
     case 'mainItem': { const m = d.meals[k]; let it = m.items.includes(v) ? m.items.filter(x => x !== v) : m.items.concat(v);
       if (!m.items.includes(v) && (v === 'mixed' || v === 'white')) it = it.filter(x => x !== (v === 'mixed' ? 'white' : 'mixed'));
       m.items = it; break; }
+    case 'menuInline': addingMenu = k; render(); { const i = document.getElementById('menuInlineInput'); if (i) i.focus(); } return;
+    case 'menuInlineAdd': { const i = document.getElementById('menuInlineInput'); const name = (i && i.value || '').trim(); if (!name){ addingMenu = null; break; }
+      const listKey = isWeekend(d.date) ? 'weekend' : 'weekday';
+      let item = settings.menus[listKey].find(x => x.name === name);
+      if (!item){ item = { id:'m' + Date.now().toString(36), name }; settings.menus[listKey].push(item); saveAll(); }
+      if (!d.meals[k].items.includes(item.id)) d.meals[k].items.push(item.id);
+      addingMenu = null; toast(name+' 추가했어요'); break; }
+    case 'menuDel': settings.menus[k] = settings.menus[k].filter(x => x.id !== v); saveAll(); break;
+    case 'menuAdd': { const i = document.getElementById('menuNew_'+k); const name = (i.value || '').trim(); if (!name){ i.focus(); return; }
+      if (settings.menus[k].some(x => x.name === name)){ toast('이미 있는 메뉴예요'); return; }
+      settings.menus[k].push({ id:'m' + Date.now().toString(36), name }); saveAll(); toast(name+' 추가했어요'); break; }
     case 'out': d.meals[k].out = v; break;
     case 'amt': d.meals[k].amt = v; break;
     case 'overPct': d.overPct = Number(v); break;
@@ -474,6 +509,7 @@ document.addEventListener('click', async ev => {
       if (editingWeight){ const i = document.getElementById('winput'); const n = parseFloat(i && i.value); if (!isNaN(n) && n >= 30 && n <= 200) d.weight = r1(n); }
       const m = document.getElementById('memo'); if (m) d.memo = m.value.trim();
       const out = clone(d); if (out.noWeight) delete out.weight; delete out.noWeight; out.savedAt = new Date().toISOString();
+      ['lunch','dinner'].forEach(mk => { if (out.meals[mk].mode === 'corp' && !out.meals[mk].items.length) out.meals[mk].mode = 'skip'; });
       entries[d.date] = out;
       if (saveAll()){ toast(fmtDate(d.date)+' 기록을 저장했어요'); draft = null; tab = 'home'; render(); window.scrollTo(0, 0); }
       return; }
@@ -515,7 +551,9 @@ document.addEventListener('change', ev => {
     r.readAsText(t.files[0]);
   }
 });
-document.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id === 'winput'){ ev.preventDefault(); document.querySelector('[data-act="wDone"]').click(); } if (ev.key === 'Enter' && ev.target.id === 'exNew'){ ev.preventDefault(); document.querySelector('[data-act="exAdd"]').click(); } });
+document.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id === 'winput'){ ev.preventDefault(); document.querySelector('[data-act="wDone"]').click(); } if (ev.key === 'Enter' && ev.target.id === 'exNew'){ ev.preventDefault(); document.querySelector('[data-act="exAdd"]').click(); }
+  if (ev.key === 'Enter' && ev.target.id === 'menuInlineInput'){ ev.preventDefault(); document.querySelector('[data-act="menuInlineAdd"]').click(); }
+  if (ev.key === 'Enter' && ev.target.id && ev.target.id.indexOf('menuNew_') === 0){ ev.preventDefault(); document.querySelector('[data-act="menuAdd"][data-k="'+ev.target.id.slice(8)+'"]').click(); } });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && tab === 'home') render(); });
 
 render();
